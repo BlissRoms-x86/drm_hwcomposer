@@ -162,8 +162,7 @@ int DrmHwcLayer::ImportBuffer(Importer *importer,
   ret = gralloc->perform(gralloc, GRALLOC_MODULE_PERFORM_GET_USAGE,
                          handle.get(), &gralloc_buffer_usage);
   if (ret) {
-    ALOGE("Failed to get usage for buffer %p (%d)", handle.get(), ret);
-    return ret;
+//  ALOGE("Failed to get usage for buffer %p (%d)", handle.get(), ret);
   }
   return 0;
 }

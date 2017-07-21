@@ -47,7 +47,7 @@ LOCAL_SHARED_LIBRARIES := \
 LOCAL_STATIC_LIBRARIES := libdrmhwc_utils
 
 LOCAL_C_INCLUDES := \
-	external/drm_gralloc \
+	external/gbm_gralloc \
 	external/libdrm \
 	external/libdrm/include/drm \
 	system/core/include/utils \

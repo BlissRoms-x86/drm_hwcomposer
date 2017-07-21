@@ -25,6 +25,7 @@
 
 #include <cutils/log.h>
 #include <xf86drm.h>
+#include <assert.h>
 
 namespace android {
 
