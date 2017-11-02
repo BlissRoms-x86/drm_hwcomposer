@@ -17,6 +17,7 @@
 #define LOG_TAG "hwc-drm-display-composition"
 
 #include "drmdisplaycomposition.h"
+#include "drmdisplaycompositor.h"
 #include "drmcrtc.h"
 #include "drmplane.h"
 #include "drmresources.h"
@@ -378,6 +379,9 @@ int DrmDisplayComposition::Plan(SquashState *squash,
   for (auto &i : composition_planes_) {
     if (!i.plane())
       continue;
+
+    // make sure that source layers are ordered based on zorder
+    std::sort(i.source_layers().begin(), i.source_layers().end());
 
     std::vector<DrmPlane *> *container;
     if (i.plane()->type() == DRM_PLANE_TYPE_PRIMARY)
