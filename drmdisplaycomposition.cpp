@@ -17,7 +17,6 @@
 #define LOG_TAG "hwc-drm-display-composition"
 
 #include "drmdisplaycomposition.h"
-#include "drmdisplaycompositor.h"
 #include "drmcrtc.h"
 #include "drmplane.h"
 #include "drmresources.h"

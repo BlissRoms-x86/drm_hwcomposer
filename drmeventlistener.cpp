@@ -20,13 +20,10 @@
 #include "drmresources.h"
 
 #include <assert.h>
-#include <errno.h>
 #include <linux/netlink.h>
 #include <sys/socket.h>
 
 #include <cutils/log.h>
-#include <hardware/hardware.h>
-#include <hardware/hwcomposer.h>
 #include <xf86drm.h>
 #include <assert.h>
 
