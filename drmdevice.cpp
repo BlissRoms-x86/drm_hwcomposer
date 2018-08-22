@@ -375,6 +375,11 @@ int DrmDevice::CreateDisplayPipe(DrmConnector *connector) {
       return ret;
     }
   }
+
+  /* Skip and avoid error for disconnected */
+  if (connector->state() == DRM_MODE_DISCONNECTED)
+    return 0;
+
   ALOGE("Could not find a suitable encoder/crtc for display %d",
         connector->display());
   return -ENODEV;
