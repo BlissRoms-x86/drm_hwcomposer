@@ -175,7 +175,7 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
 
   // First look for primary amongst internal connectors
   for (auto &conn : connectors_) {
-    if (conn->internal() && !found_primary) {
+    if (conn->state() == DRM_MODE_CONNECTED && conn->internal() && !found_primary) {
       conn->set_display(num_displays);
       displays_[num_displays] = num_displays;
       ++num_displays;
@@ -188,15 +188,15 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
   // consecutive display_numbers.
   for (auto &conn : connectors_) {
     if (conn->external() || conn->internal()) {
-      if (!found_primary) {
+      if (conn->state() == DRM_MODE_CONNECTED && !found_primary) {
         conn->set_display(num_displays);
         displays_[num_displays] = num_displays;
         found_primary = true;
         ++num_displays;
-      } else if (conn->display() < 0) {
-        conn->set_display(num_displays);
-        displays_[num_displays] = num_displays;
-        ++num_displays;
+    //} else if (conn->display() < 0) {
+    //  conn->set_display(num_displays);
+    //  displays_[num_displays] = num_displays;
+    //  ++num_displays;
       }
     }
   }
