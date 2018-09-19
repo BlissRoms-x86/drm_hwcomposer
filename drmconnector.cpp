@@ -23,6 +23,7 @@
 #include <stdint.h>
 
 #include <cutils/log.h>
+#include <cutils/properties.h>
 #include <xf86drmMode.h>
 
 namespace android {
@@ -83,6 +84,19 @@ bool DrmConnector::valid_type() const {
 }
 
 int DrmConnector::UpdateModes() {
+  char value[PROPERTY_VALUE_MAX];
+  uint32_t xres = 0, yres = 0, rate = 0;
+  if (property_get("debug.drm.mode.force", value, NULL)) {
+    // parse <xres>x<yres>[@<refreshrate>]
+    if (sscanf(value, "%dx%d@%d", &xres, &yres, &rate) != 3) {
+      rate = 0;
+      if (sscanf(value, "%dx%d", &xres, &yres) != 2) {
+        xres = yres = 0;
+      }
+    }
+    ALOGI_IF(xres && yres, "force mode to %dx%d@%dHz", xres, yres, rate);
+  }
+
   int fd = drm_->fd();
 
   drmModeConnectorPtr c = drmModeGetConnector(fd, id_);
@@ -107,8 +121,14 @@ int DrmConnector::UpdateModes() {
       continue;
 
     DrmMode m(&c->modes[i]);
+    if (xres && yres) {
+      if (m.h_display() != xres || m.v_display() != yres ||
+            (rate && uint32_t(m.v_refresh()) != rate))
+        continue;
+    }
     m.set_id(drm_->next_mode_id());
     new_modes.push_back(m);
+    ALOGD("add new mode %dx%d@%.1f id %d for display %d", m.h_display(), m.v_display(), m.v_refresh(), m.id(), display_);
   }
   modes_.swap(new_modes);
   return 0;
