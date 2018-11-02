@@ -600,8 +600,6 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
   std::vector<DrmHwcLayer> &layers = display_comp->layers();
   std::vector<DrmCompositionPlane> &comp_planes =
       display_comp->composition_planes();
-  std::vector<DrmCompositionRegion> &pre_comp_regions =
-      display_comp->pre_comp_regions();
   uint64_t out_fences[drm_->crtcs().size()];
 
   DrmConnector *connector = drm_->GetConnectorForDisplay(display_);
@@ -632,6 +630,13 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
   }
 
   if (mode_.needs_modeset) {
+    ret = drmModeAtomicAddProperty(pset, crtc->id(), crtc->active_property().id(), 1);
+    if (ret < 0) {
+      ALOGE("Failed to add crtc active to pset\n");
+      drmModeAtomicFree(pset);
+      return ret;
+    }
+
     ret = drmModeAtomicAddProperty(pset, crtc->id(), crtc->mode_property().id(),
                                    mode_.blob_id) < 0 ||
           drmModeAtomicAddProperty(pset, connector->id(),
@@ -694,7 +699,7 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
       else
         rotation |= DRM_MODE_ROTATE_0;
 
-      if (fence_fd < 0) {
+      if (fence_fd >= 0) {
         int prop_id = plane->in_fence_fd_property().id();
         if (prop_id == 0) {
                 ALOGE("Failed to get IN_FENCE_FD property id");
@@ -791,7 +796,6 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
     }
   }
 
-out:
   if (!ret) {
     uint32_t flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
     if (test_only)
