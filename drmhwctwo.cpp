@@ -26,7 +26,7 @@
 #include <inttypes.h>
 #include <string>
 
-#include <cutils/log.h>
+#include <log/log.h>
 #include <cutils/properties.h>
 #include <hardware/hardware.h>
 #include <hardware/hwcomposer2.h>
@@ -695,6 +695,13 @@ HWC2::Error DrmHwcTwo::HwcDisplay::ValidateDisplay(uint32_t *num_types,
         layer.set_validated_type(HWC2::Composition::Client);
         ++*num_types;
         break;
+      case HWC2::Composition::Device:
+        if (!compositor_.uses_GL()) {
+          layer.set_validated_type(HWC2::Composition::Client);
+          ++*num_types;
+          break;
+        }
+	/* fall through */
       default:
         layer.set_validated_type(layer.sf_type());
         break;

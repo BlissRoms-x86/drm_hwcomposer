@@ -25,6 +25,7 @@ LOCAL_SRC_FILES := \
 	worker.cpp
 
 LOCAL_MODULE := libdrmhwc_utils
+LOCAL_VENDOR_MODULE := true
 
 include $(BUILD_STATIC_LIBRARY)
 
@@ -47,7 +48,6 @@ LOCAL_SHARED_LIBRARIES := \
 LOCAL_STATIC_LIBRARIES := libdrmhwc_utils
 
 LOCAL_C_INCLUDES := \
-	external/gbm_gralloc \
 	system/core/libsync
 
 LOCAL_SRC_FILES := \
@@ -82,7 +82,21 @@ else
 LOCAL_SRC_FILES += hwcomposer.cpp
 endif
 
+
+ifeq ($(TARGET_PRODUCT),hikey960)
+LOCAL_CPPFLAGS += -DUSE_HISI_IMPORTER
+LOCAL_SRC_FILES += platformhisi.cpp
+LOCAL_C_INCLUDES += device/linaro/hikey/gralloc960/
+else ifeq ($(TARGET_PRODUCT),hikey)
+LOCAL_CPPFLAGS += -DUSE_HISI_IMPORTER
+LOCAL_SRC_FILES += platformhisi.cpp
+LOCAL_C_INCLUDES += device/linaro/hikey/gralloc/
+else ifeq ($(strip $(BOARD_DRM_HWCOMPOSER_BUFFER_IMPORTER)),minigbm)
+LOCAL_SRC_FILES += platformminigbm.cpp
+LOCAL_C_INCLUDES += external/minigbm/cros_gralloc/
+else
 LOCAL_CPPFLAGS += -DUSE_DRM_GENERIC_IMPORTER
+endif
 
 LOCAL_MODULE := hwcomposer.drm
 LOCAL_MODULE_TAGS := optional

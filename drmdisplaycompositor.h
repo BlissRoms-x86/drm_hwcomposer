@@ -102,6 +102,9 @@ class DrmDisplayCompositor {
     return &squash_state_;
   }
 
+  bool uses_GL() {
+    return !!pre_compositor_;
+  }
  private:
   struct FrameState {
     std::unique_ptr<DrmDisplayComposition> composition;

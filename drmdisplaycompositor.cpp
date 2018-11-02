@@ -26,7 +26,7 @@
 #include <sstream>
 #include <vector>
 
-#include <cutils/log.h>
+#include <log/log.h>
 #include <drm/drm_mode.h>
 #include <sync/sync.h>
 #include <utils/Trace.h>
@@ -292,6 +292,13 @@ int DrmDisplayCompositor::Init(DrmResources *drm, int display) {
     return ret;
   }
 
+  pre_compositor_.reset(new GLWorkerCompositor());
+  ret = pre_compositor_->Init();
+  if (ret) {
+    ALOGE("Failed to initialize OpenGL compositor %d", ret);
+    pre_compositor_.reset();
+  }
+
   initialized_ = true;
   return 0;
 }
@@ -413,14 +420,16 @@ int DrmDisplayCompositor::ApplySquash(DrmDisplayComposition *display_comp) {
   }
 
   std::vector<DrmCompositionRegion> &regions = display_comp->squash_regions();
-  ret = pre_compositor_->Composite(display_comp->layers().data(),
+  if (pre_compositor_) {
+    ret = pre_compositor_->Composite(display_comp->layers().data(),
                                    regions.data(), regions.size(), fb.buffer(),
                                    display_comp->importer());
-  pre_compositor_->Finish();
+    pre_compositor_->Finish();
 
-  if (ret) {
-    ALOGE("Failed to squash layers");
-    return ret;
+    if (ret) {
+      ALOGE("Failed to squash layers");
+      return ret;
+    }
   }
 
   ret = display_comp->CreateNextTimelineFence();
@@ -447,14 +456,16 @@ int DrmDisplayCompositor::ApplyPreComposite(
   }
 
   std::vector<DrmCompositionRegion> &regions = display_comp->pre_comp_regions();
-  ret = pre_compositor_->Composite(display_comp->layers().data(),
+  if (pre_compositor_) {
+    ret = pre_compositor_->Composite(display_comp->layers().data(),
                                    regions.data(), regions.size(), fb.buffer(),
                                    display_comp->importer());
-  pre_compositor_->Finish();
+    pre_compositor_->Finish();
 
-  if (ret) {
-    ALOGE("Failed to pre-composite layers");
-    return ret;
+    if (ret) {
+      ALOGE("Failed to pre-composite layers");
+      return ret;
+    }
   }
 
   ret = display_comp->CreateNextTimelineFence();
