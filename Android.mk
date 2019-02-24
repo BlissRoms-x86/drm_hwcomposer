@@ -47,6 +47,9 @@ LOCAL_SHARED_LIBRARIES := \
 
 LOCAL_STATIC_LIBRARIES := libdrmhwc_utils
 
+LOCAL_CPPFLAGS += \
+	-Wno-unused-variable
+
 LOCAL_C_INCLUDES := \
 	system/core/libsync
 
