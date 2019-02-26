@@ -442,7 +442,6 @@ GLWorkerCompositor::GLWorkerCompositor()
 }
 
 int GLWorkerCompositor::Init() {
-  int ret = 0;
   const char *egl_extensions;
   const char *gl_extensions;
   EGLint num_configs;
