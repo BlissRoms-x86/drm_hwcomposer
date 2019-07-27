@@ -17,19 +17,19 @@
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 #define LOG_TAG "hwc-drm-two"
 
+#include "drmhwctwo.h"
 #include "drmdisplaycomposition.h"
 #include "drmhwcomposer.h"
-#include "drmhwctwo.h"
 #include "platform.h"
 #include "vsyncworker.h"
 
 #include <inttypes.h>
 #include <string>
 
-#include <log/log.h>
 #include <cutils/properties.h>
 #include <hardware/hardware.h>
 #include <hardware/hwcomposer2.h>
+#include <log/log.h>
 
 namespace android {
 
@@ -57,40 +57,53 @@ DrmHwcTwo::DrmHwcTwo() {
   getFunction = HookDevGetFunction;
 }
 
-HWC2::Error DrmHwcTwo::Init() {
-  int ret = resource_manager_.Init();
-  if (ret) {
-    ALOGE("Can't initialize the resource manager %d", ret);
-    return HWC2::Error::NoResources;
-  }
-
-  DrmDevice *drm = resource_manager_.GetDrmDevice(HWC_DISPLAY_PRIMARY);
-  std::shared_ptr<Importer> importer =
-      resource_manager_.GetImporter(HWC_DISPLAY_PRIMARY);
+HWC2::Error DrmHwcTwo::CreateDisplay(hwc2_display_t displ,
+                                     HWC2::DisplayType type) {
+  DrmDevice *drm = resource_manager_.GetDrmDevice(displ);
+  std::shared_ptr<Importer> importer = resource_manager_.GetImporter(displ);
   if (!drm || !importer) {
     ALOGE("Failed to get a valid drmresource and importer");
     return HWC2::Error::NoResources;
   }
+  displays_.emplace(std::piecewise_construct, std::forward_as_tuple(displ),
+                    std::forward_as_tuple(&resource_manager_, drm, importer,
+                                          displ, type));
 
-  displays_.emplace(
-      std::piecewise_construct, std::forward_as_tuple(HWC_DISPLAY_PRIMARY),
-      std::forward_as_tuple(&resource_manager_, drm, importer,
-                            HWC_DISPLAY_PRIMARY, HWC2::DisplayType::Physical));
-
-  DrmCrtc *crtc = drm->GetCrtcForDisplay(static_cast<int>(HWC_DISPLAY_PRIMARY));
+  DrmCrtc *crtc = drm->GetCrtcForDisplay(static_cast<int>(displ));
   if (!crtc) {
-    ALOGE("Failed to get crtc for display %d",
-          static_cast<int>(HWC_DISPLAY_PRIMARY));
+    ALOGE("Failed to get crtc for display %d", static_cast<int>(displ));
     return HWC2::Error::BadDisplay;
   }
-
   std::vector<DrmPlane *> display_planes;
   for (auto &plane : drm->planes()) {
     if (plane->GetCrtcSupported(*crtc))
       display_planes.push_back(plane.get());
   }
-  displays_.at(HWC_DISPLAY_PRIMARY).Init(&display_planes);
+  displays_.at(displ).Init(&display_planes);
   return HWC2::Error::None;
+}
+
+HWC2::Error DrmHwcTwo::Init() {
+  int rv = resource_manager_.Init();
+  if (rv) {
+    ALOGE("Can't initialize the resource manager %d", rv);
+    return HWC2::Error::NoResources;
+  }
+
+  HWC2::Error ret = HWC2::Error::None;
+  for (int i = 0; i < resource_manager_.getDisplayCount(); i++) {
+    ret = CreateDisplay(i, HWC2::DisplayType::Physical);
+    if (ret != HWC2::Error::None) {
+      ALOGE("Failed to create display %d with error %d", i, ret);
+      return ret;
+    }
+  }
+
+  auto &drmDevices = resource_manager_.getDrmDevices();
+  for (auto &device : drmDevices) {
+    device->RegisterHotplugHandler(new DrmHotplugHandler(this, device.get()));
+  }
+  return ret;
 }
 
 template <typename... Args>
@@ -131,6 +144,12 @@ HWC2::Error DrmHwcTwo::RegisterCallback(int32_t descriptor,
                                         hwc2_function_pointer_t function) {
   supported(__func__);
   auto callback = static_cast<HWC2::Callback>(descriptor);
+
+  if (!function) {
+    callbacks_.erase(callback);
+    return HWC2::Error::None;
+  }
+
   callbacks_.emplace(callback, HwcCallback(data, function));
 
   switch (callback) {
@@ -138,6 +157,9 @@ HWC2::Error DrmHwcTwo::RegisterCallback(int32_t descriptor,
       auto hotplug = reinterpret_cast<HWC2_PFN_HOTPLUG>(function);
       hotplug(data, HWC_DISPLAY_PRIMARY,
               static_cast<int32_t>(HWC2::Connection::Connected));
+      auto &drmDevices = resource_manager_.getDrmDevices();
+      for (auto &device : drmDevices)
+        HandleInitialHotplugState(device.get());
       break;
     }
     case HWC2::Callback::Vsync: {
@@ -162,6 +184,10 @@ DrmHwcTwo::HwcDisplay::HwcDisplay(ResourceManager *resource_manager,
       handle_(handle),
       type_(type) {
   supported(__func__);
+}
+
+void DrmHwcTwo::HwcDisplay::ClearDisplay() {
+  compositor_.ClearDisplay();
 }
 
 HWC2::Error DrmHwcTwo::HwcDisplay::Init(std::vector<DrmPlane *> *planes) {
@@ -203,27 +229,23 @@ HWC2::Error DrmHwcTwo::HwcDisplay::Init(std::vector<DrmPlane *> *planes) {
     return HWC2::Error::BadDisplay;
   }
 
-  // Fetch the number of modes from the display
-  uint32_t num_configs;
-  HWC2::Error err = GetDisplayConfigs(&num_configs, NULL);
-  if (err != HWC2::Error::None || !num_configs)
-    return err;
-
-  // Grab the first mode, we'll choose this as the active mode
-  // TODO: Should choose the preferred mode here
-  hwc2_config_t default_config;
-  num_configs = 1;
-  err = GetDisplayConfigs(&num_configs, &default_config);
-  if (err != HWC2::Error::None)
-    return err;
-
   ret = vsync_worker_.Init(drm_, display);
   if (ret) {
     ALOGE("Failed to create event worker for d=%d %d\n", display, ret);
     return HWC2::Error::BadDisplay;
   }
 
-  return SetActiveConfig(default_config);
+  return ChosePreferredConfig();
+}
+
+HWC2::Error DrmHwcTwo::HwcDisplay::ChosePreferredConfig() {
+  // Fetch the number of modes from the display
+  uint32_t num_configs;
+  HWC2::Error err = GetDisplayConfigs(&num_configs, NULL);
+  if (err != HWC2::Error::None || !num_configs)
+    return err;
+
+  return SetActiveConfig(connector_->get_preferred_mode_id());
 }
 
 HWC2::Error DrmHwcTwo::HwcDisplay::RegisterVsyncCallback(
@@ -321,9 +343,11 @@ HWC2::Error DrmHwcTwo::HwcDisplay::GetDisplayAttribute(hwc2_config_t config,
                                                        int32_t attribute_in,
                                                        int32_t *value) {
   supported(__func__);
-  auto mode =
-      std::find_if(connector_->modes().begin(), connector_->modes().end(),
-                   [config](DrmMode const &m) { return m.id() == config; });
+  auto mode = std::find_if(connector_->modes().begin(),
+                           connector_->modes().end(),
+                           [config](DrmMode const &m) {
+                             return m.id() == config;
+                           });
   if (mode == connector_->modes().end()) {
     ALOGE("Could not find active mode for %d", config);
     return HWC2::Error::BadConfig;
@@ -375,14 +399,73 @@ HWC2::Error DrmHwcTwo::HwcDisplay::GetDisplayConfigs(uint32_t *num_configs,
     }
   }
 
-  auto num_modes = static_cast<uint32_t>(connector_->modes().size());
+  // Since the upper layers only look at vactive/hactive/refresh, height and
+  // width, it doesn't differentiate interlaced from progressive and other
+  // similar modes. Depending on the order of modes we return to SF, it could
+  // end up choosing a suboptimal configuration and dropping the preferred
+  // mode. To workaround this, don't offer interlaced modes to SF if there is
+  // at least one non-interlaced alternative and only offer a single WxH@R
+  // mode with at least the prefered mode from in DrmConnector::UpdateModes()
+
+  // TODO: Remove the following block of code until AOSP handles all modes
+  std::vector<DrmMode> sel_modes;
+
+  // Add the preferred mode first to be sure it's not dropped
+  auto mode = std::find_if(connector_->modes().begin(),
+                           connector_->modes().end(), [&](DrmMode const &m) {
+                             return m.id() ==
+                                    connector_->get_preferred_mode_id();
+                           });
+  if (mode != connector_->modes().end())
+    sel_modes.push_back(*mode);
+
+  // Add the active mode if different from preferred mode
+  if (connector_->active_mode().id() != connector_->get_preferred_mode_id())
+    sel_modes.push_back(connector_->active_mode());
+
+  // Cycle over the modes and filter out "similar" modes, keeping only the
+  // first ones in the order given by DRM (from CEA ids and timings order)
+  for (const DrmMode &mode : connector_->modes()) {
+    // TODO: Remove this when 3D Attributes are in AOSP
+    if (mode.flags() & DRM_MODE_FLAG_3D_MASK)
+      continue;
+
+    // TODO: Remove this when the Interlaced attribute is in AOSP
+    if (mode.flags() & DRM_MODE_FLAG_INTERLACE) {
+      auto m = std::find_if(connector_->modes().begin(),
+                            connector_->modes().end(),
+                            [&mode](DrmMode const &m) {
+                              return !(m.flags() & DRM_MODE_FLAG_INTERLACE) &&
+                                     m.h_display() == mode.h_display() &&
+                                     m.v_display() == mode.v_display();
+                            });
+      if (m == connector_->modes().end())
+        sel_modes.push_back(mode);
+
+      continue;
+    }
+
+    // Search for a similar WxH@R mode in the filtered list and drop it if
+    // another mode with the same WxH@R has already been selected
+    // TODO: Remove this when AOSP handles duplicates modes
+    auto m = std::find_if(sel_modes.begin(), sel_modes.end(),
+                          [&mode](DrmMode const &m) {
+                            return m.h_display() == mode.h_display() &&
+                                   m.v_display() == mode.v_display() &&
+                                   m.v_refresh() == mode.v_refresh();
+                          });
+    if (m == sel_modes.end())
+      sel_modes.push_back(mode);
+  }
+
+  auto num_modes = static_cast<uint32_t>(sel_modes.size());
   if (!configs) {
     *num_configs = num_modes;
     return HWC2::Error::None;
   }
 
   uint32_t idx = 0;
-  for (const DrmMode &mode : connector_->modes()) {
+  for (const DrmMode &mode : sel_modes) {
     if (idx >= *num_configs)
       break;
     configs[idx++] = mode.id();
@@ -432,8 +515,8 @@ HWC2::Error DrmHwcTwo::HwcDisplay::GetDozeSupport(int32_t *support) {
 }
 
 HWC2::Error DrmHwcTwo::HwcDisplay::GetHdrCapabilities(
-    uint32_t *num_types, int32_t */*types*/, float */*max_luminance*/,
-    float */*max_average_luminance*/, float */*min_luminance*/) {
+    uint32_t *num_types, int32_t * /*types*/, float * /*max_luminance*/,
+    float * /*max_average_luminance*/, float * /*min_luminance*/) {
   supported(__func__);
   *num_types = 0;
   return HWC2::Error::None;
@@ -488,9 +571,13 @@ HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(bool test) {
   std::map<uint32_t, DrmHwcTwo::HwcLayer *> z_map;
   for (std::pair<const hwc2_layer_t, DrmHwcTwo::HwcLayer> &l : layers_) {
     HWC2::Composition comp_type;
-    if (test)
+    if (test) {
       comp_type = l.second.sf_type();
-    else
+      if (comp_type == HWC2::Composition::Device) {
+        if (!importer_->CanImportBuffer(l.second.buffer()))
+          comp_type = HWC2::Composition::Client;
+      }
+    } else
       comp_type = l.second.validated_type();
 
     switch (comp_type) {
@@ -524,8 +611,8 @@ HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(bool test) {
     map.layers.emplace_back(std::move(layer));
   }
 
-  std::unique_ptr<DrmDisplayComposition> composition =
-      compositor_.CreateComposition();
+  std::unique_ptr<DrmDisplayComposition> composition = compositor_
+                                                           .CreateComposition();
   composition->Init(drm_, crtc_, importer_.get(), planner_.get(), frame_no_);
 
   // TODO: Don't always assume geometry changed
@@ -591,16 +678,18 @@ HWC2::Error DrmHwcTwo::HwcDisplay::PresentDisplay(int32_t *retire_fence) {
 
 HWC2::Error DrmHwcTwo::HwcDisplay::SetActiveConfig(hwc2_config_t config) {
   supported(__func__);
-  auto mode =
-      std::find_if(connector_->modes().begin(), connector_->modes().end(),
-                   [config](DrmMode const &m) { return m.id() == config; });
+  auto mode = std::find_if(connector_->modes().begin(),
+                           connector_->modes().end(),
+                           [config](DrmMode const &m) {
+                             return m.id() == config;
+                           });
   if (mode == connector_->modes().end()) {
     ALOGE("Could not find active mode for %d", config);
     return HWC2::Error::BadConfig;
   }
 
-  std::unique_ptr<DrmDisplayComposition> composition =
-      compositor_.CreateComposition();
+  std::unique_ptr<DrmDisplayComposition> composition = compositor_
+                                                           .CreateComposition();
   composition->Init(drm_, crtc_, importer_.get(), planner_.get(), frame_no_);
   int ret = composition->SetDisplayMode(*mode);
   ret = compositor_.ApplyComposition(std::move(composition));
@@ -608,8 +697,8 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetActiveConfig(hwc2_config_t config) {
     ALOGE("Failed to queue dpms composition on %d", ret);
     return HWC2::Error::BadConfig;
   }
-  if (connector_->active_mode().id() == 0)
-    connector_->set_active_mode(*mode);
+
+  connector_->set_active_mode(*mode);
 
   // Setup the client layer's dimensions
   hwc_rect_t display_frame = {.left = 0,
@@ -679,8 +768,8 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetPowerMode(int32_t mode_in) {
       return HWC2::Error::Unsupported;
   };
 
-  std::unique_ptr<DrmDisplayComposition> composition =
-      compositor_.CreateComposition();
+  std::unique_ptr<DrmDisplayComposition> composition = compositor_
+                                                           .CreateComposition();
   composition->Init(drm_, crtc_, importer_.get(), planner_.get(), frame_no_);
   composition->SetDpmsMode(dpms_value);
   int ret = compositor_.ApplyComposition(std::move(composition));
@@ -693,7 +782,7 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetPowerMode(int32_t mode_in) {
 
 HWC2::Error DrmHwcTwo::HwcDisplay::SetVsyncEnabled(int32_t enabled) {
   supported(__func__);
-  vsync_worker_.VSyncControl(enabled);
+  vsync_worker_.VSyncControl(HWC2_VSYNC_ENABLE == enabled);
   return HWC2::Error::None;
 }
 
@@ -730,23 +819,17 @@ HWC2::Error DrmHwcTwo::HwcDisplay::ValidateDisplay(uint32_t *num_types,
   for (std::pair<const uint32_t, DrmHwcTwo::HwcLayer *> &l : z_map) {
     if (comp_failed || !avail_planes--)
       break;
-    l.second->set_validated_type(HWC2::Composition::Device);
+    if (importer_->CanImportBuffer(l.second->buffer()))
+      l.second->set_validated_type(HWC2::Composition::Device);
   }
 
   for (std::pair<const hwc2_layer_t, DrmHwcTwo::HwcLayer> &l : layers_) {
     DrmHwcTwo::HwcLayer &layer = l.second;
-    switch (layer.sf_type()) {
-      case HWC2::Composition::Device:
-        if (layer.validated_type() == HWC2::Composition::Device)
-          break;
-      // fall thru
-      case HWC2::Composition::SolidColor:
-      case HWC2::Composition::Cursor:
-      case HWC2::Composition::Sideband:
-      default:
-        layer.set_validated_type(HWC2::Composition::Client);
-        ++*num_types;
-        break;
+    // We can only handle layers of Device type, send everything else to SF
+    if (layer.sf_type() != HWC2::Composition::Device ||
+        layer.validated_type() != HWC2::Composition::Device) {
+      layer.set_validated_type(HWC2::Composition::Client);
+      ++*num_types;
     }
   }
   return *num_types ? HWC2::Error::HasChanges : HWC2::Error::None;
@@ -877,6 +960,52 @@ void DrmHwcTwo::HwcLayer::PopulateDrmLayer(DrmHwcLayer *layer) {
   layer->SetTransform(static_cast<int32_t>(transform_));
 }
 
+void DrmHwcTwo::HandleDisplayHotplug(hwc2_display_t displayid, int state) {
+  auto cb = callbacks_.find(HWC2::Callback::Hotplug);
+  if (cb == callbacks_.end())
+    return;
+
+  auto hotplug = reinterpret_cast<HWC2_PFN_HOTPLUG>(cb->second.func);
+  hotplug(cb->second.data, displayid,
+          (state == DRM_MODE_CONNECTED ? HWC2_CONNECTION_CONNECTED
+                                       : HWC2_CONNECTION_DISCONNECTED));
+}
+
+void DrmHwcTwo::HandleInitialHotplugState(DrmDevice *drmDevice) {
+  for (auto &conn : drmDevice->connectors()) {
+    if (conn->state() != DRM_MODE_CONNECTED)
+      continue;
+    HandleDisplayHotplug(conn->display(), conn->state());
+  }
+}
+
+void DrmHwcTwo::DrmHotplugHandler::HandleEvent(uint64_t timestamp_us) {
+  for (auto &conn : drm_->connectors()) {
+    drmModeConnection old_state = conn->state();
+    drmModeConnection cur_state = conn->UpdateModes()
+                                      ? DRM_MODE_UNKNOWNCONNECTION
+                                      : conn->state();
+
+    if (cur_state == old_state)
+      continue;
+
+    ALOGI("%s event @%" PRIu64 " for connector %u on display %d",
+          cur_state == DRM_MODE_CONNECTED ? "Plug" : "Unplug", timestamp_us,
+          conn->id(), conn->display());
+
+    int display_id = conn->display();
+    if (cur_state == DRM_MODE_CONNECTED) {
+      auto &display = hwc2_->displays_.at(display_id);
+      display.ChosePreferredConfig();
+    } else {
+      auto &display = hwc2_->displays_.at(display_id);
+      display.ClearDisplay();
+    }
+
+    hwc2_->HandleDisplayHotplug(display_id, cur_state);
+  }
+}
+
 // static
 int DrmHwcTwo::HookDevClose(hw_device_t * /*dev*/) {
   unsupported(__func__);
@@ -902,7 +1031,7 @@ hwc2_function_pointer_t DrmHwcTwo::HookDevGetFunction(
       return ToHook<HWC2_PFN_CREATE_VIRTUAL_DISPLAY>(
           DeviceHook<int32_t, decltype(&DrmHwcTwo::CreateVirtualDisplay),
                      &DrmHwcTwo::CreateVirtualDisplay, uint32_t, uint32_t,
-                     int32_t*, hwc2_display_t *>);
+                     int32_t *, hwc2_display_t *>);
     case HWC2::FunctionDescriptor::DestroyVirtualDisplay:
       return ToHook<HWC2_PFN_DESTROY_VIRTUAL_DISPLAY>(
           DeviceHook<int32_t, decltype(&DrmHwcTwo::DestroyVirtualDisplay),
@@ -953,13 +1082,15 @@ hwc2_function_pointer_t DrmHwcTwo::HookDevGetFunction(
           DisplayHook<decltype(&HwcDisplay::GetColorModes),
                       &HwcDisplay::GetColorModes, uint32_t *, int32_t *>);
     case HWC2::FunctionDescriptor::GetDisplayAttribute:
-      return ToHook<HWC2_PFN_GET_DISPLAY_ATTRIBUTE>(DisplayHook<
-          decltype(&HwcDisplay::GetDisplayAttribute),
-          &HwcDisplay::GetDisplayAttribute, hwc2_config_t, int32_t, int32_t *>);
+      return ToHook<HWC2_PFN_GET_DISPLAY_ATTRIBUTE>(
+          DisplayHook<decltype(&HwcDisplay::GetDisplayAttribute),
+                      &HwcDisplay::GetDisplayAttribute, hwc2_config_t, int32_t,
+                      int32_t *>);
     case HWC2::FunctionDescriptor::GetDisplayConfigs:
-      return ToHook<HWC2_PFN_GET_DISPLAY_CONFIGS>(DisplayHook<
-          decltype(&HwcDisplay::GetDisplayConfigs),
-          &HwcDisplay::GetDisplayConfigs, uint32_t *, hwc2_config_t *>);
+      return ToHook<HWC2_PFN_GET_DISPLAY_CONFIGS>(
+          DisplayHook<decltype(&HwcDisplay::GetDisplayConfigs),
+                      &HwcDisplay::GetDisplayConfigs, uint32_t *,
+                      hwc2_config_t *>);
     case HWC2::FunctionDescriptor::GetDisplayName:
       return ToHook<HWC2_PFN_GET_DISPLAY_NAME>(
           DisplayHook<decltype(&HwcDisplay::GetDisplayName),
@@ -996,9 +1127,10 @@ hwc2_function_pointer_t DrmHwcTwo::HookDevGetFunction(
           DisplayHook<decltype(&HwcDisplay::SetActiveConfig),
                       &HwcDisplay::SetActiveConfig, hwc2_config_t>);
     case HWC2::FunctionDescriptor::SetClientTarget:
-      return ToHook<HWC2_PFN_SET_CLIENT_TARGET>(DisplayHook<
-          decltype(&HwcDisplay::SetClientTarget), &HwcDisplay::SetClientTarget,
-          buffer_handle_t, int32_t, int32_t, hwc_region_t>);
+      return ToHook<HWC2_PFN_SET_CLIENT_TARGET>(
+          DisplayHook<decltype(&HwcDisplay::SetClientTarget),
+                      &HwcDisplay::SetClientTarget, buffer_handle_t, int32_t,
+                      int32_t, hwc_region_t>);
     case HWC2::FunctionDescriptor::SetColorMode:
       return ToHook<HWC2_PFN_SET_COLOR_MODE>(
           DisplayHook<decltype(&HwcDisplay::SetColorMode),
@@ -1058,9 +1190,10 @@ hwc2_function_pointer_t DrmHwcTwo::HookDevGetFunction(
           LayerHook<decltype(&HwcLayer::SetLayerPlaneAlpha),
                     &HwcLayer::SetLayerPlaneAlpha, float>);
     case HWC2::FunctionDescriptor::SetLayerSidebandStream:
-      return ToHook<HWC2_PFN_SET_LAYER_SIDEBAND_STREAM>(LayerHook<
-          decltype(&HwcLayer::SetLayerSidebandStream),
-          &HwcLayer::SetLayerSidebandStream, const native_handle_t *>);
+      return ToHook<HWC2_PFN_SET_LAYER_SIDEBAND_STREAM>(
+          LayerHook<decltype(&HwcLayer::SetLayerSidebandStream),
+                    &HwcLayer::SetLayerSidebandStream,
+                    const native_handle_t *>);
     case HWC2::FunctionDescriptor::SetLayerSourceCrop:
       return ToHook<HWC2_PFN_SET_LAYER_SOURCE_CROP>(
           LayerHook<decltype(&HwcLayer::SetLayerSourceCrop),
@@ -1113,7 +1246,7 @@ int DrmHwcTwo::HookDevOpen(const struct hw_module_t *module, const char *name,
   ctx.release();
   return 0;
 }
-}
+}  // namespace android
 
 static struct hw_module_methods_t hwc2_module_methods = {
     .open = android::DrmHwcTwo::HookDevOpen,
