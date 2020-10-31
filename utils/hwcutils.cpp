@@ -76,7 +76,7 @@ int DrmHwcNativeHandle::CopyBufferHandle(buffer_handle_t handle) {
   GraphicBufferMapper &gm(GraphicBufferMapper::get());
   int ret;
 
-  ret = gm.getGrallocMapper().importBuffer(handle,
+  ret = (int) gm.getGrallocMapper().importBuffer(handle,
                                            const_cast<buffer_handle_t *>(
                                                &handle_copy));
 
