@@ -67,6 +67,7 @@ cc_defaults {
         "-DHWC2_USE_CPP11",
         "-DHWC2_INCLUDE_STRINGIFICATION",
         "-Wno-c++17-extensions",
+        "-Wno-sign-compare",
     ],
 
     product_variables: {
