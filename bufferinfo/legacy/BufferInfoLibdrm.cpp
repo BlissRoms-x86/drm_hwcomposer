@@ -58,7 +58,9 @@ static const struct droid_yuv_format droid_yuv_formats[] = {
     {HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED, YCbCr, 1, DRM_FORMAT_YUV420},
     {HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED, YCrCb, 1, DRM_FORMAT_YVU420},
     {HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED, YCrCb, 1, DRM_FORMAT_AYUV},
+#if PLATFORM_SDK_VERSION >= 29 /* Android Q and later */
     {HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED, YCrCb, 1, DRM_FORMAT_XYUV8888},
+#endif
 };
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
