@@ -18,7 +18,11 @@
 #define LOG_TAG "hwc-drm-utils"
 
 #include <log/log.h>
+#if PLATFORM_SDK_VERSION >= 29 /* Android Q and later */
 #include <ui/Gralloc.h>
+#else
+#include <ui/Gralloc2.h>
+#endif
 #include <ui/GraphicBufferMapper.h>
 
 #include "bufferinfo/BufferInfoGetter.h"
