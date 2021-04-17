@@ -39,7 +39,7 @@ int BufferInfoMinigbm::ConvertBoInfo(buffer_handle_t handle, hwc_drm_bo_t *bo) {
   bo->height = gr_handle->height;
   bo->hal_format = gr_handle->droid_format;
 
-  bo->format = gr_handle->format;
+  bo->format = gr_handle->format == DRM_FORMAT_ABGR8888 ? DRM_FORMAT_XBGR8888 : gr_handle->format;
   if (bo->format == DRM_FORMAT_YVU420_ANDROID)
     bo->format = DRM_FORMAT_YVU420;
 
