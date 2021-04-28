@@ -18,6 +18,7 @@
 
 #include "ResourceManager.h"
 
+#include <fcntl.h>
 #include <cutils/properties.h>
 #include <log/log.h>
 #include <sys/stat.h>
