@@ -230,6 +230,7 @@ class HwcDisplay {
   std::string DumpDelta(HwcDisplay::Stats delta);
 
   HWC2::Error Init();
+  void Deinit();
 
   HWC2::Error SetActiveConfigInternal(uint32_t config, int64_t change_time);
 };
